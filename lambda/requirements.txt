@@ -1,0 +1,4 @@
+boto3
+opencv-python
+Pillow
+python-dateutil
