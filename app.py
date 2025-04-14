@@ -82,6 +82,8 @@ def extract_frames(video_path, output_dir, fps=1):
                 print(f"已保存 {saved_count} 帧图片，当前视频时间点: {timestamp:.2f}s")
 
         frame_count += 1
+        # if saved_count > 19:
+        #     break
 
     # 释放资源
     cap.release()
@@ -164,9 +166,72 @@ def call_claude(model_id, system_prompt, temperature, top_p, length, video_local
         }
     ]
 
-    system = [{
-        "text": system_prompt
-    }]
+    if system_prompt:
+        system = [{
+            "text": system_prompt
+        }]
+    else:
+        system = []
+
+    inferenceConfig = {
+        "maxTokens": int(length),
+        'temperature': temperature,
+        'topP': top_p
+    }
+
+    start_time = time.time()
+
+    response = bedrock_runtime.converse(
+        modelId=model_id,
+        messages=messages,
+        system=system,
+        inferenceConfig=inferenceConfig
+    )
+
+    # 计算耗时
+    elapsed_time = time.time() - start_time
+    st.info(f"API调用耗时: {elapsed_time:.2f}秒")
+    return response
+
+
+def call_nova_by_image(model_id, system_prompt, temperature, top_p, length, video_local_path, prompt):
+    frames_dir = f'{video_local_path}_frames'
+    extract_frames(video_local_path, frames_dir, 0.01)
+
+    image_paths = [os.path.join(frames_dir, f)
+                   for f in os.listdir(frames_dir) if f.endswith('.jpg')]
+    images = resize_image(image_paths)
+
+    content = []
+    for format, img in images:
+        content.append({
+            "image": {
+                "format": format,
+                "source": {
+                    "bytes": img
+                }
+            }
+        })
+        if len(content) >= 20:
+            break
+
+    content.append({
+        "text": prompt
+    })
+
+    messages = [
+        {
+            "role": "user",
+            "content": content,
+        }
+    ]
+
+    if system_prompt:
+        system = [{
+            "text": system_prompt
+        }]
+    else:
+        system = []
 
     inferenceConfig = {
         "maxTokens": int(length),
@@ -192,7 +257,6 @@ def call_claude(model_id, system_prompt, temperature, top_p, length, video_local
 def call_nova(model_id, system_prompt, temperature, top_p, length, video_local_path, prompt):
     with open(video_local_path, "rb") as file:
         media_bytes = file.read()
-        media_base64 = base64.b64encode(media_bytes)
 
     messages = [
         {
@@ -211,9 +275,12 @@ def call_nova(model_id, system_prompt, temperature, top_p, length, video_local_p
         }
     ]
 
-    system = [{
-        "text": system_prompt
-    }]
+    if system_prompt:
+        system = [{
+            "text": system_prompt
+        }]
+    else:
+        system = []
 
     inferenceConfig = {
         "maxTokens": int(length),
@@ -260,25 +327,7 @@ with st.sidebar:
 Face Detection: Determine whether the video contains individuals showing a complete, frontal face (the camera angle must be a direct frontal shot). Provide detailed explanations and note any anomalies.
 Video Quality Assessment: Evaluate if the video is shaky and whether the lighting is sufficient. Provide ratings for stability and lighting along with detailed explanations.
 Content Detection: Check whether the video involves inappropriate content such as pornography, violence, or suggestive implications. List the specific risk types detected and explain your reasoning.
-Return your analysis in a JSON format as shown in the example below:
-{
-  "face_detection": {
-    "status": "Yes/No",
-    "details": "Detailed explanation and criteria used"
-  },
-  "video_quality": {
-    "stability": "Good/Bad",
-    "lighting": "Sufficient/Insufficient",
-    "details": "Detailed explanation and criteria used"
-  },
-  "content_detection": {
-    "inappropriate_content": "None/Detected",
-    "content_types": ["Pornography", "Violence", "Suggestive"],
-    "details": "Detailed explanation and criteria used"
-  }
-}
-Ensure that the output strictly follows the JSON structure provided above.
-Do not include any other content or instructions in the output content except for the JSON structure""", height=200)
+""", height=200)
 
     temperature = st.select_slider(
         "温度", value=0.7, options=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
@@ -344,9 +393,12 @@ if st.button("提交"):
         my_bar = st.progress(0, text="Processing...")
         with st.spinner('Processing...'):
             try:
-                response = call_nova(model, system_prompt, temperature,
-                                     top_p, length, video_local_path, prompt)
+                # response = call_nova(model, system_prompt, temperature,
+                #                      top_p, length, video_local_path, prompt)
+                response = call_nova_by_image(
+                    model, system_prompt, temperature, top_p, length, video_local_path, prompt)
                 st.json(response.get("output"))
+                st.json(response.get("usage"))
             except Exception as e:
                 st.error(f"call nova failed: {str(e)}")
             finally:
