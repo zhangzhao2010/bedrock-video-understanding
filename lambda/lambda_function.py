@@ -1,15 +1,18 @@
 import base64
+import shutil
 import json
 import time
 import os
 import math
+from urllib.parse import urlparse
 import cv2
 import boto3
 import uuid
 from PIL import Image
+import requests
 from video_quality_checker import check_video_quality
 
-TMP_DIR = '/tmp'
+TMP_DIR = './tmp'
 NOVA_PROMPT = """
 You are a professional video review and tagging model expert, responsible for reviewing and tagging individual videos according to the given review rules.
 Please carefully read the review rules in <rules> and strictly follow these rules to review and classify videos.
@@ -35,7 +38,7 @@ When outputting results, please follow the requirements in <output_format> to pr
 
 3. **Framing Issues** [Tag: `INAPPROPRIATE_FRAMING`]
    - Excessive focus on sensitive areas, sensitive body parts (chest, triangular area, thighs, buttocks) occupying more than 1/2 of the screen area
-   
+
 4. **Seductive Oral Behaviors** [Tag: `MOUTH_ORAL`]
    - Protruding tongue, licking lips, biting lips
    - Seductive licking behaviors, such as licking objects or inserting fingers into mouth and sucking (excluding normal eating, nail biting)
@@ -65,7 +68,7 @@ When outputting results, please follow the requirements in <output_format> to pr
    - Bed or bedroom scenes appearing
    - No person appearing in the frame
 
-3. **Video Quality Issues** [Tag: `VIDEO_QUALITY_ISSUE`] 
+3. **Video Quality Issues** [Tag: `VIDEO_QUALITY_ISSUE`]
    - Shaky footage or screen shaking, such as a blurry frame of the image
    - Evaluate if the video is shaky and whether the lighting is sufficient. Provide ratings for stability and lighting along with detailed explanations.
 
@@ -128,27 +131,11 @@ Before outputting the final result, please self-check and reflect on whether the
 SYSTEM_PROMPT = "You are an expert in video moderation. You are responsible for reviewing the video content and providing a detailed analysis of the video content. You will be given a video and a prompt. You will analyze the video according to the prompt and provide a detailed analysis of the video content. The analysis should be in JSON format."
 
 
-def extract_and_merge_all_frames(s3_uri: str):
-    # 解析 S3 URI
-    assert s3_uri.startswith("s3://")
-    _, bucket_key = s3_uri.split("s3://", 1)
-    bucket, key = bucket_key.split("/", 1)
-
-    # 创建存储目录
-    tmp_dir = TMP_DIR
-    os.makedirs(tmp_dir, exist_ok=True)
-
-    tmp_uuid = uuid.uuid4()
-    local_dir = f'{tmp_dir}/{tmp_uuid}'
-    os.makedirs(local_dir, exist_ok=True)
+def extract_and_merge_all_frames(local_video_path: str):
+    local_dir = os.path.dirname(local_video_path)
 
     frame_dir = f'{local_dir}/frames'
     os.makedirs(frame_dir, exist_ok=True)
-
-    # 下载视频到本地
-    s3 = boto3.client('s3')
-    local_video_path = f'{local_dir}/{tmp_uuid}.mp4'
-    s3.download_file(bucket, key, local_video_path)
 
     # 打开视频文件
     cap = cv2.VideoCapture(local_video_path)
@@ -204,7 +191,7 @@ def extract_and_merge_all_frames(s3_uri: str):
     merged_image.save(merged_path)
     print(f"拼接图保存到: {merged_path}")
 
-    return local_video_path, merged_path, len(images)
+    return merged_path, len(images)
 
 
 def imageModeration(image_path):
@@ -287,14 +274,6 @@ def analysis_merged_images(image: str, sub_image_count):
     return result
 
 
-def rek_video_moderation(video_s3_uri):
-    _, merged_imaged, sub_image_count = extract_and_merge_all_frames(
-        video_s3_uri)
-    rek_moderation_result = analysis_merged_images(
-        merged_imaged, sub_image_count)
-    return rek_moderation_result
-
-
 bedrock_runtime = boto3.client("bedrock-runtime", region_name="us-east-1")
 
 
@@ -343,14 +322,78 @@ def call_nova_use_s3_file(s3_uri, model_id, prompt, system_prompt, temperature, 
     return response
 
 
+def download_video_from_s3(s3_uri):
+    # 解析 S3 URI
+    assert s3_uri.startswith("s3://")
+    _, bucket_key = s3_uri.split("s3://", 1)
+    bucket, key = bucket_key.split("/", 1)
+
+    # 创建存储目录
+    tmp_dir = TMP_DIR
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    tmp_uuid = uuid.uuid4()
+    local_dir = f'{tmp_dir}/{tmp_uuid}'
+    os.makedirs(local_dir, exist_ok=True)
+
+    # 下载视频到本地
+    s3 = boto3.client('s3')
+    local_video_path = f'{local_dir}/{tmp_uuid}.mp4'
+    s3.download_file(bucket, key, local_video_path)
+
+    return local_video_path
+
+
+def download_video_from_url(video_url):
+    # 创建存储目录
+    tmp_dir = TMP_DIR
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    tmp_uuid = uuid.uuid4()
+    local_dir = f'{tmp_dir}/{tmp_uuid}'
+    os.makedirs(local_dir, exist_ok=True)
+
+    # 从URL中提取文件名
+    filename = extract_filename_from_url(video_url)
+
+    # 构建完整的输出路径
+    output_path = os.path.join(local_dir, filename)
+
+    # 确保输出目录存在
+    if not os.path.exists(local_dir):
+        os.makedirs(local_dir)
+
+    with requests.get(video_url, stream=True) as response:
+        response.raise_for_status()
+        with open(output_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+    print(f"视频已成功下载到: {output_path}")
+    return output_path
+
+
+def extract_filename_from_url(url):
+    parsed_url = urlparse(url)
+    path = parsed_url.path
+    filename = path.split('/')[-1]
+    return filename
+
+
 def handler(event, context):
     try:
         video_s3_uri = event.get('video_s3_uri', '')
-        if not video_s3_uri:
-            raise RuntimeError('Param video_s3_uri not found')
+        video_url = event.get('video_url', '')
 
-        local_video_path, merged_imaged, sub_image_count = extract_and_merge_all_frames(
-            video_s3_uri)
+        if video_s3_uri:
+            local_video_path = download_video_from_s3(video_s3_uri)
+        elif video_url:
+            local_video_path = download_video_from_url(video_url)
+        else:
+            raise RuntimeError("Invalid param")
+
+        merged_imaged, sub_image_count = extract_and_merge_all_frames(
+            local_video_path)
 
         # ffmpeg check video quality
         video_quality_check_result = check_video_quality(local_video_path)
@@ -362,12 +405,26 @@ def handler(event, context):
                 'confidence': 99
             }
 
+        if len(video_quality_result.keys()) > 0:
+            return {
+                'err_no': 0,
+                'err_msg': '',
+                'data': video_quality_result
+            }
+
         # rekognition check face
         rek_moderation_result = analysis_merged_images(
             merged_imaged, sub_image_count)
         for k, rek_r in rek_moderation_result.items():
             if rek_r['is_exist'] == 0:
                 del rek_moderation_result[k]
+
+        if len(rek_moderation_result.keys()) > 0:
+            return {
+                'err_no': 0,
+                'err_msg': '',
+                'data': rek_moderation_result
+            }
 
         # nova check
         model_id = event.get('model_id', 'us.amazon.nova-pro-v1:0')
@@ -379,31 +436,31 @@ def handler(event, context):
 
         nova_response = call_nova_use_s3_file(
             video_s3_uri, model_id, prompt, system_prompt, temperature, top_p, max_token)
-        # print(nova_response)
 
         nova_result = json.loads(nova_response.get("output").get(
             "message").get("content")[0].get("text"))
 
-        if len(video_quality_result | rek_moderation_result) > 0:
-            del nova_result['NO_ISSUE']
-
         return {
             'err_no': 0,
             'err_msg': '',
-            'data': video_quality_result | rek_moderation_result | nova_result
+            'data': nova_result
         }
     except Exception as e:
-        raise e
+        # raise e
         return {
             'err_no': 1,
             'err_msg': str(e),
             'data': {}
         }
+    finally:
+        local_dir = os.path.dirname(local_video_path)
+        shutil.rmtree(local_dir)
 
 
 if __name__ == "__main__":
     event = {
-        'video_s3_uri': 's3://bucket/video.mp4',
+        # 'video_s3_uri': 's3://mybucket/test.mp4',
+        'video_url': 'https://example.com/test.mp4',
     }
     context = {}
     r = handler(event, context)
