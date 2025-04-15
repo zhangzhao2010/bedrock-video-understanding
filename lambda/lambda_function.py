@@ -12,7 +12,7 @@ from PIL import Image
 import requests
 from video_quality_checker import check_video_quality
 
-TMP_DIR = './tmp'
+TMP_DIR = '/tmp'
 NOVA_PROMPT = """
 You are a professional video review and tagging model expert, responsible for reviewing and tagging individual videos according to the given review rules.
 Please carefully read the review rules in <rules> and strictly follow these rules to review and classify videos.
@@ -460,7 +460,7 @@ def handler(event, context):
 if __name__ == "__main__":
     event = {
         # 'video_s3_uri': 's3://mybucket/test.mp4',
-        'video_url': 'https://example.com/test.mp4',
+        'video_url': 'https://d6d3wha0hetk7.cloudfront.net/prd/live-cam-videos/20250311/1741663441784_36d244b6-3c50-4348-95ea-dc97547c1307.mp4',
     }
     context = {}
     r = handler(event, context)
