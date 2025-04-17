@@ -22,11 +22,11 @@ class VideoQualityChecker:
 
     def check_all(self):
         """Execute all checks"""
-        self.check_format()
+        # self.check_format()
         # Even if there are format issues, still try to detect black screens and freezes
         self.check_black_frames()
         self.check_freezes()
-        self.check_audio()
+        # self.check_audio()
         return self.get_report()
 
     def check_format(self):
@@ -292,12 +292,12 @@ class VideoQualityChecker:
             report["duration"] = self.duration
 
         # Add format errors
-        if self.format_errors:
-            for error in self.format_errors:
-                report["issues"].append({
-                    "type": "format",
-                    "description": error
-                })
+        # if self.format_errors:
+        #     for error in self.format_errors:
+        #         report["issues"].append({
+        #             "type": "format",
+        #             "description": error
+        #         })
 
         # Add black screen issues
         for black in self.black_frames:
@@ -320,11 +320,11 @@ class VideoQualityChecker:
             })
 
         # Add audio issues
-        if not self.has_audio:
-            report["issues"].append({
-                "type": "audio",
-                "description": "Video has no audio track"
-            })
+        # if not self.has_audio:
+        #     report["issues"].append({
+        #         "type": "audio",
+        #         "description": "Video has no audio track"
+        #     })
 
         for issue in self.audio_issues:
             report["issues"].append({
@@ -340,24 +340,25 @@ def check_video_quality(video_path):
     checker = VideoQualityChecker(video_path)
     report = checker.check_all()
 
-    print(f"Video Quality Initial Report - {os.path.basename(video_path)}")
-    print("-" * 60)
+    # print(f"Video Quality Initial Report - {os.path.basename(video_path)}")
+    # print("-" * 60)
 
-    print(
-        f"Format check: {'✅ Valid' if report['format_valid'] else '❌ Invalid'}")
-    print(
-        f"Audio check: {'✅ Has audio' if report['has_audio'] else '❌ No audio'}")
+    # print(
+    #     f"Format check: {'✅ Valid' if report['format_valid'] else '❌ Invalid'}")
+    # print(
+    #     f"Audio check: {'✅ Has audio' if report['has_audio'] else '❌ No audio'}")
 
-    if "duration" in report:
-        print(f"Duration: {timedelta(seconds=report['duration'])}")
+    # if "duration" in report:
+    #     print(f"Duration: {timedelta(seconds=report['duration'])}")
 
-    if "frame_rate" in report:
-        print(f"Frame rate: {report['frame_rate']:.2f} fps")
+    # if "frame_rate" in report:
+    #     print(f"Frame rate: {report['frame_rate']:.2f} fps")
 
-    print("-" * 60)
+    # print("-" * 60)
 
     if not report["issues"]:
-        print("✅ No quality issues detected")
+        # print("✅ No quality issues detected")
+        pass
     else:
         # Group issues by type
         format_issues = [issue for issue in report["issues"]

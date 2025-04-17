@@ -1,4 +1,3 @@
-import base64
 import shutil
 import json
 import time
@@ -32,16 +31,15 @@ When outputting results, please follow the requirements in <output_format> to pr
 
 2. **Sexually Suggestive Behavior** [Tag: `SEXUAL_SUGGESTION`]
    - Self-stimulating behaviors, such as masturbation (hands touching breasts, buttocks, triangular area, not including scratching)
-   - Seductive movements and poses
-   - Sexual interaction behaviors
+   - Seductive movements and poses or sexual interaction behaviors
    - Use of adult props (vibrators, dildos, vibrating eggs, etc.), seductive playing with rod-shaped objects (cucumbers, bananas, etc.)
+   - Seductive licking behaviors, such as licking objects or inserting fingers into mouth and sucking (excluding normal eating, nail biting)
 
 3. **Framing Issues** [Tag: `INAPPROPRIATE_FRAMING`]
    - Excessive focus on sensitive areas, sensitive body parts (chest, triangular area, thighs, buttocks) occupying more than 1/2 of the screen area
-
-4. **Seductive Oral Behaviors** [Tag: `MOUTH_ORAL`]
-   - Protruding tongue, licking lips, biting lips
-   - Seductive licking behaviors, such as licking objects or inserting fingers into mouth and sucking (excluding normal eating, nail biting)
+   
+4. **OTHER Sexually Behavior** [Tag `OTHER_SEXUAL`]
+   - The tongue sticks out of the mouth and performs seductive actions such as licking the lips
 
 ## II. Other Sensitive Content
 
@@ -54,19 +52,14 @@ When outputting results, please follow the requirements in <output_format> to pr
 ## III. Technical and Subject Issues
 
 1. **Technical Issues** [Tag: `TECHNICAL_ISSUE`]
-   - The subject's face is not fully visible; the person must show a complete face(both two eyes, nose, and mouth must appear simultaneously)
    - The subject's face angle is not a front-facing shot, poor camera angle, such as side shots and overhead shots (lying on bed or sofa), resulting in poor video quality
    - Poor lighting, such as excessive brightness or darkness, resulting in poor video quality
-   - The subject's posture is lying down
    - Inappropriate distance, such as too far to clearly see the face, or too close making the face occupy the entire video
    - Black screen, such as the screen being black
 
 2. **Subject Issues** [Tag: `SUBJECT_ISSUE`]
-   - Minors appearing
-   - Only males appearing
    - Unclear face
    - Bed or bedroom scenes appearing
-   - No person appearing in the frame
 
 3. **Video Quality Issues** [Tag: `VIDEO_QUALITY_ISSUE`]
    - Shaky footage or screen shaking, such as a blurry frame of the image
@@ -114,7 +107,7 @@ Please return the analysis results in JSON format, example format as follows:
     },
     "NO_ISSUE": {
         "explanation": "Only when all other items are determined to be 'non-existent', mark as 'no issue', indicating that the video meets platform requirements for compliance, frontal face, good video quality, etc.",
-        "is_exist": 0,
+        "is_exist": 1,
         "confidence": 99
     }
 }
@@ -225,7 +218,9 @@ def faceDetection(image_path):
 
 
 def analysis_merged_images(image: str, sub_image_count):
-    min_age = 18
+    min_age = 14
+    max_age = 18
+    is_minors = False
     gender = "Female"
     face_count = 0
     face_not_occluded_count = 0
@@ -234,8 +229,8 @@ def analysis_merged_images(image: str, sub_image_count):
     for face_detail in response.get('FaceDetails', []):
         if face_detail.get('Confidence') > 80:
             face_count += 1
-            if face_detail.get('AgeRange').get('Low') < min_age:
-                min_age = face_detail.get('AgeRange').get('Low')
+            if face_detail.get('AgeRange').get('Low') < min_age and face_detail.get('AgeRange').get('High') < max_age and face_detail.get('FaceOccluded').get('Value') == False:
+                is_minors = True
             if face_detail.get('Gender').get('Value') == "Male":
                 gender = "Male"
             if face_detail.get('FaceOccluded').get('Value') == False:
@@ -250,7 +245,7 @@ def analysis_merged_images(image: str, sub_image_count):
             'confidence': 99
         }
     # 未成年判断
-    if min_age < 18:
+    if is_minors:
         result['MINORS_ISSUE'] = {
             'explanation': 'Minors may appear in the video',
             'is_exist': 1,
@@ -275,6 +270,52 @@ def analysis_merged_images(image: str, sub_image_count):
 
 
 bedrock_runtime = boto3.client("bedrock-runtime", region_name="us-east-1")
+
+
+def call_nova_use_local_file(video_local_path, model_id, prompt, system_prompt, temperature, top_p, max_token):
+    with open(video_local_path, "rb") as file:
+        media_bytes = file.read()
+
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "video": {
+                        "format": "mp4",
+                        "source": {
+                            "bytes": media_bytes
+                        }
+                    }
+                },
+                {"text": prompt},
+            ],
+        }
+    ]
+
+    system = [{
+        "text": system_prompt
+    }]
+
+    inferenceConfig = {
+        "maxTokens": int(max_token),
+        'temperature': temperature,
+        'topP': top_p
+    }
+
+    start_time = time.time()
+
+    response = bedrock_runtime.converse(
+        modelId=model_id,
+        messages=messages,
+        system=system,
+        inferenceConfig=inferenceConfig
+    )
+
+    # 计算耗时
+    elapsed_time = time.time() - start_time
+    print(f"API调用耗时: {elapsed_time:.2f}秒")
+    return response
 
 
 def call_nova_use_s3_file(s3_uri, model_id, prompt, system_prompt, temperature, top_p, max_token):
@@ -388,6 +429,7 @@ def handler(event, context):
         if video_s3_uri:
             local_video_path = download_video_from_s3(video_s3_uri)
         elif video_url:
+            print(f'video url: {video_url}')
             local_video_path = download_video_from_url(video_url)
         else:
             raise RuntimeError("Invalid param")
@@ -406,6 +448,7 @@ def handler(event, context):
             }
 
         if len(video_quality_result.keys()) > 0:
+            print(f'video format check failed')
             return {
                 'err_no': 0,
                 'err_msg': '',
@@ -420,6 +463,7 @@ def handler(event, context):
                 del rek_moderation_result[k]
 
         if len(rek_moderation_result.keys()) > 0:
+            print(f'rekognition check failed')
             return {
                 'err_no': 0,
                 'err_msg': '',
@@ -430,12 +474,12 @@ def handler(event, context):
         model_id = event.get('model_id', 'us.amazon.nova-pro-v1:0')
         prompt = event.get('prompt', NOVA_PROMPT)
         system_prompt = event.get('system_prompt', SYSTEM_PROMPT)
-        temperature = event.get('temperature', 0.5)
-        top_p = event.get('top_p', 0.9)
+        temperature = event.get('temperature', 0.3)
+        top_p = event.get('top_p', 0.5)
         max_token = event.get('max_token', 2048)
 
-        nova_response = call_nova_use_s3_file(
-            video_s3_uri, model_id, prompt, system_prompt, temperature, top_p, max_token)
+        nova_response = call_nova_use_local_file(
+            local_video_path, model_id, prompt, system_prompt, temperature, top_p, max_token)
 
         nova_result = json.loads(nova_response.get("output").get(
             "message").get("content")[0].get("text"))
@@ -458,10 +502,14 @@ def handler(event, context):
 
 
 if __name__ == "__main__":
-    event = {
-        # 'video_s3_uri': 's3://mybucket/test.mp4',
-        'video_url': 'https://d6d3wha0hetk7.cloudfront.net/prd/live-cam-videos/20250311/1741663441784_36d244b6-3c50-4348-95ea-dc97547c1307.mp4',
-    }
-    context = {}
-    r = handler(event, context)
-    print(r)
+    video_list = []
+
+    for url in video_list:
+        event = {
+            'video_url': url,
+        }
+        context = {}
+        r = handler(event, context)
+        print(r['data'])
+        print("-" * 60)
+        time.sleep(10)
